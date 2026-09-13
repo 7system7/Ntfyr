@@ -310,12 +310,12 @@ impl Credentials {
         self.creds.read().unwrap().clone()
     }
     pub async fn insert(&self, server: &str, username: &str, password: &str) -> anyhow::Result<()> {
-        {
-            if let Some(cred) = self.creds.read().unwrap().get(server) {
-                if cred.username != username {
-                    anyhow::bail!("You can add only one account per server");
-                }
-            }
+        /**
+         * A server has one active account. Replacing it removes the old
+         * keyring entry so changing usernames does not leave stale credentials.
+         */
+        if self.creds.read().unwrap().contains_key(server) {
+            self.delete(server).await?;
         }
         let attrs = HashMap::from([
             ("type", "password"),

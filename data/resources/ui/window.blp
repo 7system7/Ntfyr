@@ -136,6 +136,12 @@ template $NtfyrWindow: Adw.ApplicationWindow {
                   menu-model: subscription_menu;
                   tooltip-text: _("Subscription Menu");
                 }
+                [end]
+                ToggleButton sort_button {
+                  icon-name: "view-sort-descending-symbolic";
+                  tooltip-text: _("Sort newest first");
+                  valign: center;
+                }
               }
 
               [top]
@@ -150,10 +156,11 @@ template $NtfyrWindow: Adw.ApplicationWindow {
                 Adw.Clamp {
                   ListBox message_list {
                     selection-mode: none;
-                    show-separators: true;
+                    show-separators: false;
 
                     styles [
                       "background",
+                      "message-list",
                     ]
                   }
                 }
@@ -216,10 +223,11 @@ template $NtfyrWindow: Adw.ApplicationWindow {
                 Adw.Clamp {
                   ListBox unified_message_list {
                     selection-mode: none;
-                    show-separators: true;
+                    show-separators: false;
 
                     styles [
                       "background",
+                      "message-list",
                     ]
                   }
                 }

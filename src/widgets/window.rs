@@ -42,6 +42,8 @@ mod imp {
         pub subscription_view: TemplateChild<adw::ToolbarView>,
         #[template_child]
         pub subscription_menu_btn: TemplateChild<gtk::MenuButton>,
+        #[template_child]
+        pub sort_button: TemplateChild<gtk::ToggleButton>,
         pub subscription_list_model: gio::ListStore,
         #[template_child]
         pub toast_overlay: TemplateChild<adw::ToastOverlay>,
@@ -77,6 +79,7 @@ mod imp {
         pub unified_sorter: OnceCell<gtk::CustomSorter>,
         pub unified_sort_model: OnceCell<gtk::SortListModel>,
         pub last_activity: Cell<std::time::Instant>,
+        pub suppress_auto_read: Cell<bool>,
     }
 
     impl Default for NtfyrWindow {
@@ -88,6 +91,7 @@ mod imp {
                 subscription_view: Default::default(),
                 navigation_split_view: Default::default(),
                 subscription_menu_btn: Default::default(),
+                sort_button: Default::default(),
                 subscription_list: Default::default(),
                 main_stack: Default::default(),
                 lock_view: Default::default(),
@@ -112,6 +116,7 @@ mod imp {
                 unified_sorter: Default::default(),
                 unified_sort_model: Default::default(),
                 last_activity: Cell::new(std::time::Instant::now()),
+                suppress_auto_read: Cell::new(false),
             };
 
             this
@@ -252,6 +257,7 @@ impl NtfyrWindow {
         obj.connect_entry_and_send_btn();
         obj.connect_code_btn();
         obj.connect_items_changed();
+        obj.imp().settings.bind("sort-descending", &*obj.imp().sort_button, "active").build();
         obj.connect_settings_changed();
         obj.connect_server_changes();
         obj.selected_subscription_changed(None);
@@ -399,6 +405,39 @@ impl NtfyrWindow {
         });
     }
 
+    pub fn open_notification(&self, server: &str, topic: &str) {
+        let list = &self.imp().subscription_list;
+        let mut index = 0;
+        while let Some(row) = list.row_at_index(index) {
+            let matches = unsafe {
+                row.data::<String>("server").map(|value| value.as_ref() == server).unwrap_or(false)
+                    && row.data::<String>("topic").map(|value| value.as_ref() == topic).unwrap_or(false)
+            };
+            if matches {
+                self.imp().suppress_auto_read.set(true);
+                list.select_row(Some(&row));
+                if let Some(subscription) = self.selected_subscription() {
+                    self.selected_subscription_changed(Some(&subscription));
+                    self.imp().content_stack.set_visible_child(&*self.imp().subscription_view);
+                }
+                self.imp().navigation_split_view.set_show_content(true);
+                return;
+            }
+            index += 1;
+        }
+    }
+
+    pub fn dismiss_notification(&self, server: String, topic: String, timestamp: u64) {
+        for i in 0..self.imp().subscription_list_model.n_items() {
+            let Some(item) = self.imp().subscription_list_model.item(i) else { continue; };
+            let Ok(sub) = item.downcast::<Subscription>() else { continue; };
+            if sub.server() == server && sub.topic() == topic {
+                self.error_boundary().spawn(async move { sub.dismiss_message(timestamp).await });
+                return;
+            }
+        }
+    }
+
     pub fn purge_default_server_topics(&self) {
         let this = self.clone();
         
@@ -530,7 +569,7 @@ impl NtfyrWindow {
              let msg = b.borrow::<models::ReceivedMessage>();
              let id = msg.id.clone();
              let this = this.clone();
-             MessageRow::new(msg.clone(), move || this.delete_message_anywhere(id.clone())).upcast()
+             MessageRow::new(msg.clone(), false, move || this.delete_message_anywhere(id.clone()), || {}).upcast()
         });
 
         // Unified inbox selection is handled in subscription_list row_activated
@@ -778,17 +817,17 @@ impl NtfyrWindow {
         });
         menu_box.append(&add_topic_btn);
 
-        // Add Account Item
-        let add_account_btn = create_menu_row(&gettext("Add Account"), "contact-new-symbolic");
+        // Add/edit account item
+        let account_btn = create_menu_row(&gettext("Account"), "contact-new-symbolic");
         let server_clone = server.to_string();
         let popover_clone = popover.clone();
-            add_account_btn.connect_clicked(move |btn| {
-                popover_clone.popdown();
-                if let Some(window) = btn.root().and_downcast::<NtfyrWindow>() {
-                    window.on_add_account_clicked(&server_clone);
-                }
-            });
-        menu_box.append(&add_account_btn);
+        account_btn.connect_clicked(move |btn| {
+            popover_clone.popdown();
+            if let Some(window) = btn.root().and_downcast::<NtfyrWindow>() {
+                window.on_account_clicked(&server_clone);
+            }
+        });
+        menu_box.append(&account_btn);
 
         // Remove Server Item (only custom)
         if server != "https://ntfy.sh" {
@@ -904,12 +943,19 @@ impl NtfyrWindow {
                     let b = obj.downcast_ref::<glib::BoxedAnyObject>().unwrap();
                     let msg = b.borrow::<models::ReceivedMessage>();
                     let id = msg.id.clone();
+                    let unseen = msg.time > sub_for_rows.imp().read_until.get();
                     let sub = sub_for_rows.clone();
+                    let seen_sub = sub_for_rows.clone();
+                    let seen_time = msg.time;
                     let this = this.clone();
-                    MessageRow::new(msg.clone(), move || {
+                    let seen_this = this.clone();
+                    MessageRow::new(msg.clone(), unseen, move || {
                         let sub = sub.clone();
                         let id = id.clone();
                         this.error_boundary().spawn(async move { sub.delete_message(id).await });
+                    }, move || {
+                        let sub = seen_sub.clone();
+                        seen_this.error_boundary().spawn(async move { sub.mark_message_seen(seen_time).await });
                     })
                     .upcast()
                 });
@@ -933,6 +979,9 @@ impl NtfyrWindow {
         }
     }
     fn flag_read(&self) {
+        if self.imp().suppress_auto_read.replace(false) {
+            return;
+        }
         let vadj = self.imp().message_scroll.vadjustment();
         // There is nothing to scroll, so the user viewed all the messages
         if vadj.page_size() == vadj.upper()
@@ -1164,6 +1213,37 @@ impl NtfyrWindow {
             dc.close();
             None
         });
+    }
+
+    pub fn on_account_clicked(&self, server: &str) {
+        let dialog = NtfyrAccountDialog::new(server.to_string());
+        let this = self.clone();
+        let server_name = server.to_string();
+        let dialog_for_load = dialog.clone();
+        self.error_boundary().spawn(async move {
+            if let Ok(accounts) = this.notifier().list_accounts().await {
+                if let Some(account) = accounts.into_iter().find(|account| account.server == server_name) {
+                    dialog_for_load.set_account(&account);
+                }
+            }
+            dialog_for_load.present(Some(&this));
+            Ok::<_, anyhow::Error>(())
+        });
+
+        let this = self.clone();
+        dialog.connect_closure(
+            "save",
+            false,
+            glib::closure_local!(move |dialog: NtfyrAccountDialog| {
+                let (server, username, password) = dialog.account_data();
+                let this = this.clone();
+                this.error_boundary().spawn(async move {
+                    this.notifier().add_account(&server, &username, &password).await?;
+                    this.imp().toast_overlay.add_toast(adw::Toast::new(&gettext("Account updated successfully")));
+                    Ok::<_, anyhow::Error>(())
+                });
+            }),
+        );
     }
 
     pub fn on_add_account_clicked(&self, server: &str) {

@@ -576,11 +576,15 @@ impl SubscriptionActor {
 
                 let title = { msg.notification_title(&self.model) };
 
-                let portal_id = portal_notification_id(&self.model.server, &self.model.topic);
+                let portal_id = portal_notification_id(&self.model.server, &self.model.topic, &msg.id);
                 let n = models::Notification {
                     title,
                     body: msg.display_message().as_deref().unwrap_or("").to_string(),
                     actions: msg.actions.clone(),
+                    server: self.model.server.clone(),
+                    topic: self.model.topic.clone(),
+                    message_time: msg.time,
+                    message_id: msg.id.clone(),
                     portal_id,
                 };
 
@@ -625,11 +629,13 @@ impl SubscriptionActor {
 }
 
 /// Stable Desktop portal notification id: one notification per (server, topic).
-fn portal_notification_id(server: &str, topic: &str) -> Option<String> {
+fn portal_notification_id(server: &str, topic: &str, message_id: &str) -> Option<String> {
     let mut hasher = Sha256::new();
     hasher.update(server.as_bytes());
     hasher.update([0xff]);
     hasher.update(topic.as_bytes());
+    hasher.update([0xff]);
+    hasher.update(message_id.as_bytes());
     let digest = hasher.finalize();
     let slug: String = digest.iter().take(12).map(|b| format!("{:02x}", b)).collect();
     Some(format!("io.github.tobagin.Ntfyr.z{slug}"))
