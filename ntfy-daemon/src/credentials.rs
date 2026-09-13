@@ -311,12 +311,11 @@ impl Credentials {
     }
     pub async fn insert(&self, server: &str, username: &str, password: &str) -> anyhow::Result<()> {
         /*
-         * A server has one active account. Replacing it removes the old
-         * keyring entry so changing usernames does not leave stale credentials.
+         * A server has one active account. Store the replacement before removing
+         * the old username-specific entry so a failed write cannot lose the
+         * existing credential.
          */
-        if self.creds.read().unwrap().contains_key(server) {
-            self.delete(server).await?;
-        }
+        let previous = self.creds.read().unwrap().get(server).cloned();
         let attrs = HashMap::from([
             ("type", "password"),
             ("username", username),
@@ -325,6 +324,17 @@ impl Credentials {
         self.keyring
             .create_item("Password", attrs, password, true)
             .await?;
+
+        if let Some(previous) = previous {
+            if previous.username != username {
+                let old_attrs = HashMap::from([
+                    ("type", "password"),
+                    ("username", previous.username.as_str()),
+                    ("server", server),
+                ]);
+                self.keyring.delete(old_attrs).await?;
+            }
+        }
 
         self.creds.write().unwrap().insert(
             server.to_string(),

@@ -352,8 +352,26 @@ impl SubscriptionActor {
                         }
                         SubscriptionCommand::UpdateReadUntil { timestamp, resp_tx } => {
                             debug!(topic=?self.model.topic, timestamp=timestamp, "updating read until timestamp");
-                            let res = self.env.db.update_read_until(&self.model.server, &self.model.topic, timestamp);
-                            let _ = resp_tx.send(res.map_err(|e| anyhow::anyhow!(e)));
+                            let read_until = self.model.read_until.max(timestamp);
+                            let res = self.env.db.update_read_until(
+                                &self.model.server,
+                                &self.model.topic,
+                                read_until,
+                            );
+                            match res {
+                                Ok(()) => {
+                                    self.model.read_until = read_until;
+                                    let messages = self.stored_messages_snapshot();
+                                    let _ = self.broadcast_tx.send(ListenerEvent::MessagesReset {
+                                        read_until,
+                                        messages,
+                                    });
+                                    let _ = resp_tx.send(Ok(()));
+                                }
+                                Err(e) => {
+                                    let _ = resp_tx.send(Err(anyhow::anyhow!(e)));
+                                }
+                            }
                         }
                     }
                 }

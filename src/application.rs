@@ -625,11 +625,17 @@ impl NtfyrApplication {
                 let dismiss_source = source("dismiss");
 
                 portal_notif = portal_notif.button(
-                    ashpd::desktop::notification::Button::new("Open app", "app.notification-open")
+                    ashpd::desktop::notification::Button::new(
+                        &gettext("Open app"),
+                        "app.notification-open",
+                    )
                         .target(open_source.as_str()),
                 );
                 portal_notif = portal_notif.button(
-                    ashpd::desktop::notification::Button::new("Dismiss", "app.notification-dismiss")
+                    ashpd::desktop::notification::Button::new(
+                        &gettext("Dismiss"),
+                        "app.notification-dismiss",
+                    )
                         .target(dismiss_source.as_str()),
                 );
 

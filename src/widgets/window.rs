@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::cell::OnceCell;
 
 use adw::prelude::*;
@@ -102,6 +103,7 @@ mod imp {
         pub unified_sort_model: OnceCell<gtk::SortListModel>,
         pub last_activity: Cell<std::time::Instant>,
         pub suppress_auto_read: Cell<bool>,
+        pub pending_notification: RefCell<Option<(String, String)>>,
     }
 
     impl Default for NtfyrWindow {
@@ -140,6 +142,7 @@ mod imp {
                 unified_sort_model: Default::default(),
                 last_activity: Cell::new(std::time::Instant::now()),
                 suppress_auto_read: Cell::new(false),
+                pending_notification: RefCell::new(None),
             };
 
             this
@@ -431,14 +434,24 @@ impl NtfyrWindow {
     }
 
     pub fn open_notification(&self, server: &str, topic: &str) {
+        *self.imp().pending_notification.borrow_mut() =
+            Some((server.to_string(), topic.to_string()));
+        self.try_open_pending_notification();
+    }
+
+    fn try_open_pending_notification(&self) {
+        let Some((server, topic)) = self.imp().pending_notification.borrow().clone() else {
+            return;
+        };
         let list = &self.imp().subscription_list;
         let mut index = 0;
         while let Some(row) = list.row_at_index(index) {
             let matches = unsafe {
-                row.data::<String>("server").map(|value| value.as_ref() == server).unwrap_or(false)
-                    && row.data::<String>("topic").map(|value| value.as_ref() == topic).unwrap_or(false)
+                row.data::<String>("server").map(|value| value.as_ref() == server.as_str()).unwrap_or(false)
+                    && row.data::<String>("topic").map(|value| value.as_ref() == topic.as_str()).unwrap_or(false)
             };
             if matches {
+                self.imp().pending_notification.borrow_mut().take();
                 self.imp().suppress_auto_read.set(true);
                 list.select_row(Some(&row));
                 if let Some(subscription) = self.selected_subscription() {
@@ -594,7 +607,19 @@ impl NtfyrWindow {
              let msg = b.borrow::<models::ReceivedMessage>();
              let id = msg.id.clone();
              let this = this.clone();
-             MessageRow::new(msg.clone(), false, move || this.delete_message_anywhere(id.clone()), || {}).upcast()
+             let delete_this = this.clone();
+             let seen_this = this;
+             let topic = msg.topic.clone();
+             let timestamp = msg.time;
+             let delete_id = id.clone();
+             let seen_id = id;
+             MessageRow::new(
+                 msg.clone(),
+                 false,
+                 move || delete_this.delete_message_anywhere(delete_id.clone()),
+                 move || seen_this.mark_message_seen_anywhere(topic.clone(), seen_id.clone(), timestamp),
+             )
+             .upcast()
         });
 
         // Unified inbox selection is handled in subscription_list row_activated
@@ -614,6 +639,28 @@ impl NtfyrWindow {
                     self.error_boundary().spawn(async move { sub.delete_message(id).await });
                     return;
                 }
+            }
+        }
+    }
+
+    fn mark_message_seen_anywhere(&self, topic: String, id: String, timestamp: u64) {
+        let model = &self.imp().subscription_list_model;
+        for i in 0..model.n_items() {
+            let Some(sub) = model.item(i).and_downcast::<Subscription>() else { continue };
+            if sub.topic() != topic {
+                continue;
+            }
+            let msgs = sub.imp().messages.clone();
+            let owns = (0..msgs.n_items()).any(|j| {
+                msgs.item(j)
+                    .and_downcast::<glib::BoxedAnyObject>()
+                    .map(|obj| obj.borrow::<models::ReceivedMessage>().id == id)
+                    .unwrap_or(false)
+            });
+            if owns {
+                self.error_boundary()
+                    .spawn(async move { sub.mark_message_seen(timestamp).await });
+                return;
             }
         }
     }
@@ -771,6 +818,8 @@ impl NtfyrWindow {
                 list.append(&placeholder);
             }
         }
+
+        self.try_open_pending_notification();
     }
 
     fn build_server_action_row(&self, server: &str) -> adw::ActionRow {

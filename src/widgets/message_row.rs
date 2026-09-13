@@ -1,10 +1,10 @@
 
 
+use std::net::{IpAddr, ToSocketAddrs};
 use std::rc::Rc;
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use chrono::Datelike;
 
 use gettextrs::gettext;
 use gtk::{gdk, gio, glib};
@@ -48,12 +48,6 @@ fn themed_notification_icon(unseen: bool) -> &'static str {
     candidates.iter().copied().find(|name| theme.has_icon(name)).unwrap_or("dialog-information-symbolic")
 }
 
-fn decode_message_text(text: &str) -> String {
-    text.replace("\\r\\n", "\n")
-        .replace("\\n", "\n")
-        .replace("\\r", "\r")
-}
-
 fn markdown_image_urls(markdown: &str) -> Vec<String> {
     let mut urls = Vec::new();
     let mut rest = markdown;
@@ -70,6 +64,50 @@ fn markdown_image_urls(markdown: &str) -> Vec<String> {
     urls
 }
 
+fn is_blocked_image_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_broadcast()
+        }
+        IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            let is_link_local = segments[0] & 0xffc0 == 0xfe80;
+            let is_unique_local = segments[0] & 0xfe00 == 0xfc00;
+            let mapped_v4 = ip.to_ipv4_mapped();
+
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || is_link_local
+                || is_unique_local
+                || mapped_v4.is_some_and(|ip| is_blocked_image_ip(IpAddr::V4(ip)))
+        }
+    }
+}
+
+fn validate_image_url(raw_url: &str) -> anyhow::Result<()> {
+    let url = url::Url::parse(raw_url)?;
+    if !matches!(url.scheme(), "http" | "https") {
+        anyhow::bail!("unsupported image URL scheme");
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("image URL has no host"))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("image URL has no port"))?;
+    let addresses: Vec<_> = (host, port).to_socket_addrs()?.collect();
+    if addresses.is_empty() || addresses.iter().any(|address| is_blocked_image_ip(address.ip())) {
+        anyhow::bail!("image URL resolves to a blocked address");
+    }
+    Ok(())
+}
+
 fn markdown_to_pango(markdown: &str) -> String {
     let parser = Parser::new(markdown);
     let mut pango = String::new();
@@ -79,7 +117,6 @@ fn markdown_to_pango(markdown: &str) -> String {
             Event::Start(Tag::Paragraph) => {
                 if !pango.is_empty() { pango.push('\n'); }
             }
-            Event::End(TagEnd::Paragraph) => pango.push('\n'),
             Event::Start(Tag::Heading { .. }) => pango.push_str("<b>"),
             Event::End(TagEnd::Heading(_)) => pango.push_str("</b>\n"),
             Event::Start(Tag::Strong) => pango.push_str("<b>"),
@@ -164,18 +201,13 @@ impl MessageRow {
         self.add_controller(seen_gesture);
         let mut row = 0;
 
-        let now = chrono::Local::now();
+        let datetime_format = settings.string("datetime-format");
         let time = gtk::Label::builder()
             .label(
                 &chrono::DateTime::from_timestamp(msg.time as i64, 0)
                     .map(|time| {
                         let time = time.with_timezone(&chrono::Local);
-                        let format = if time.year() == now.year() {
-                            "%b %-d %H:%M"
-                        } else {
-                            "%b %-d %Y %H:%M"
-                        };
-                        time.format(format).to_string()
+                        time.format(datetime_format.as_str()).to_string()
                     })
                     .unwrap_or_default(),
             )
@@ -250,7 +282,6 @@ impl MessageRow {
         }
 
         if let Some(message) = msg.display_message() {
-            let message = decode_message_text(&message);
             let label = gtk::Label::builder()
                 .wrap_mode(gtk::pango::WrapMode::WordChar)
                 .xalign(0.0)
@@ -318,11 +349,17 @@ impl MessageRow {
     }
 
     fn fetch_image_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
+        validate_image_url(url)?;
         let path = glib::user_cache_dir().join("io.github.tobagin.Ntfyr").join(&url);
         let bytes = if path.exists() {
             std::fs::read(&path)?
         } else {
-            ureq::get(url)
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .max_redirects(0)
+                .build()
+                .into();
+            agent
+                .get(url)
                 .call()?
                 .into_body()
                 .read_to_vec()?
