@@ -5,7 +5,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gettextrs::gettext;
 
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 use ntfy_daemon::models;
 use ntfy_daemon::NtfyHandle;
 use tracing::{error, info, warn};
@@ -17,6 +17,22 @@ use anyhow::Result;
 use crate::subscription::Status;
 use crate::subscription::Subscription;
 use crate::widgets::*;
+
+fn themed_icon(candidates: &'static [&'static str]) -> &'static str {
+    let Some(display) = gdk::Display::default() else {
+        return candidates.last().copied().unwrap_or("dialog-information-symbolic");
+    };
+    let theme = gtk::IconTheme::for_display(&display);
+    candidates.iter().copied().find(|name| theme.has_icon(name)).unwrap_or_else(|| candidates.last().copied().unwrap_or("dialog-information-symbolic"))
+}
+
+fn themed_inbox_icon() -> &'static str {
+    themed_icon(&["view-list-symbolic", "folder-symbolic", "dialog-information-symbolic"])
+}
+
+fn themed_sort_icon() -> &'static str {
+    themed_icon(&["view-sort-descending-symbolic", "sort-descending-symbolic", "view-list-symbolic"])
+}
 
 mod imp {
     use super::*;
@@ -257,6 +273,7 @@ impl NtfyrWindow {
         obj.connect_entry_and_send_btn();
         obj.connect_code_btn();
         obj.connect_items_changed();
+        obj.imp().sort_button.set_icon_name(themed_sort_icon());
         obj.imp().settings.bind("sort-descending", &*obj.imp().sort_button, "active").build();
         obj.connect_settings_changed();
         obj.connect_server_changes();
@@ -694,9 +711,11 @@ impl NtfyrWindow {
         // 1. Unified Inbox - ActionRow directly in ListBox (ActionRow IS a ListBoxRow)
         let inbox = adw::ActionRow::builder()
             .subtitle(&gettext("Unified Inbox"))
-            .icon_name("mail-read-symbolic")
             .activatable(true)
             .build();
+        let inbox_icon = gtk::Image::from_icon_name(themed_inbox_icon());
+        inbox_icon.set_pixel_size(16);
+        inbox.add_prefix(&inbox_icon);
         unsafe { inbox.set_data("unified-inbox", true); }
         list.append(&inbox);
         

@@ -35,6 +35,19 @@ mod imp {
     impl GridImpl for MessageRow {}
 }
 
+fn themed_notification_icon(unseen: bool) -> &'static str {
+    let Some(display) = gdk::Display::default() else {
+        return "dialog-information-symbolic";
+    };
+    let theme = gtk::IconTheme::for_display(&display);
+    let candidates: &[&str] = if unseen {
+        &["alarm-symbolic", "preferences-system-notifications-symbolic", "notification-symbolic", "dialog-information-symbolic"]
+    } else {
+        &["notifications-disabled-symbolic", "preferences-system-notifications-symbolic", "dialog-information-symbolic"]
+    };
+    candidates.iter().copied().find(|name| theme.has_icon(name)).unwrap_or("dialog-information-symbolic")
+}
+
 fn decode_message_text(text: &str) -> String {
     text.replace("\\r\\n", "\n")
         .replace("\\n", "\n")
@@ -207,7 +220,8 @@ impl MessageRow {
             time_box.append(&priority);
         }
 
-        let unseen_icon = gtk::Image::from_icon_name(if unseen { "preferences-system-notifications-symbolic" } else { "notifications-disabled-symbolic" });
+        let icon_name = themed_notification_icon(unseen);
+        let unseen_icon = gtk::Image::from_icon_name(icon_name);
         let unseen_tooltip = if unseen { gettext("Unread notification") } else { gettext("Seen notification") };
         unseen_icon.set_tooltip_text(Some(&unseen_tooltip));
         unseen_icon.add_css_class("unseen-indicator");
