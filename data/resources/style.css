@@ -71,6 +71,21 @@ button.small {
   margin-bottom: 5px;
 }
 
+.unread-badge {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background-color: alpha(@theme_fg_color, 0.12);
+  color: @theme_fg_color;
+  font-weight: 700;
+}
+
+.unread-badge.follow-accent {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+}
+
 .navigation-sidebar > row:last-child {
   margin-bottom: 0;
 }

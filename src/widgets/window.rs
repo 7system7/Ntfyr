@@ -31,7 +31,11 @@ fn themed_inbox_icon() -> &'static str {
 }
 
 fn themed_sort_icon() -> &'static str {
-    themed_icon(&["view-sort-descending-symbolic", "sort-descending-symbolic", "view-list-symbolic"])
+    themed_icon(&[
+        "view-list-ordered-symbolic",
+        "view-sort-descending-symbolic",
+        "view-list-symbolic",
+    ])
 }
 
 mod imp {
@@ -67,6 +71,8 @@ mod imp {
         pub stack: TemplateChild<gtk::Stack>,
         #[template_child]
         pub welcome_view: TemplateChild<adw::ToolbarView>,
+        #[template_child]
+        pub welcome_status_page: TemplateChild<adw::StatusPage>,
         #[template_child]
         pub list_view: TemplateChild<gtk::ScrolledWindow>,
         #[template_child]
@@ -114,6 +120,7 @@ mod imp {
                 toast_overlay: Default::default(),
                 stack: Default::default(),
                 welcome_view: Default::default(),
+                welcome_status_page: Default::default(),
                 list_view: Default::default(),
                 message_scroll: Default::default(),
                 banner: Default::default(),
@@ -274,6 +281,7 @@ impl NtfyrWindow {
         obj.connect_code_btn();
         obj.connect_items_changed();
         obj.imp().sort_button.set_icon_name(themed_sort_icon());
+        obj.imp().welcome_status_page.set_icon_name(Some(themed_inbox_icon()));
         obj.imp().settings.bind("sort-descending", &*obj.imp().sort_button, "active").build();
         obj.connect_settings_changed();
         obj.connect_server_changes();
@@ -889,7 +897,6 @@ impl NtfyrWindow {
         // Adw.ActionRow { subtitle, icon-name, selectable: false }
         let action_row = adw::ActionRow::builder()
             .subtitle(&gettext("no topics added"))
-            .icon_name("mail-mark-important-symbolic")
             .selectable(false)
             .build();
         unsafe { action_row.set_data("placeholder", true); }
@@ -1077,6 +1084,19 @@ impl NtfyrWindow {
         let badge = gtk::Label::new(None);
         badge.set_valign(gtk::Align::Center);
         badge.set_margin_start(5);
+        badge.add_css_class("unread-badge");
+        let accent_settings = gio::Settings::new(APP_ID);
+        if accent_settings.boolean("follow-accent-color") {
+            badge.add_css_class("follow-accent");
+        }
+        let badge_for_settings = badge.clone();
+        accent_settings.connect_changed(Some("follow-accent-color"), move |settings, _| {
+            if settings.boolean("follow-accent-color") {
+                badge_for_settings.add_css_class("follow-accent");
+            } else {
+                badge_for_settings.remove_css_class("follow-accent");
+            }
+        });
         badge.set_visible(false);
         let badge_clone = badge.clone();
         sub.connect_unread_count_notify(move |sub| {
@@ -1410,4 +1430,3 @@ impl NtfyrWindow {
     }
 
 }
-
