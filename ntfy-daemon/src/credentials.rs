@@ -310,7 +310,7 @@ impl Credentials {
         self.creds.read().unwrap().clone()
     }
     pub async fn insert(&self, server: &str, username: &str, password: &str) -> anyhow::Result<()> {
-        /**
+        /*
          * A server has one active account. Replacing it removes the old
          * keyring entry so changing usernames does not leave stale credentials.
          */
